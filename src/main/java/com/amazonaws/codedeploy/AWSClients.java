@@ -1,27 +1,18 @@
 /*
  * Copyright 2014 Amazon.com, Inc. or its affiliates. All Rights Reserved.
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
  * A copy of the License is located at
- * 
+ *
  *  http://aws.amazon.com/apache2.0
- * 
+ *
  * or in the "license" file accompanying this file. This file is distributed
  * on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
  * express or implied. See the License for the specific language governing
  * permissions and limitations under the License.
  */
 package com.amazonaws.codedeploy;
-
-import static org.apache.commons.lang.StringUtils.isEmpty;
-
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.OutputStreamWriter;
-import java.io.Writer;
-import java.util.UUID;
 
 import com.amazonaws.AmazonServiceException;
 import com.amazonaws.ClientConfiguration;
@@ -34,11 +25,20 @@ import com.amazonaws.services.codedeploy.AmazonCodeDeployClient;
 import com.amazonaws.services.codedeploy.model.GetApplicationRequest;
 import com.amazonaws.services.identitymanagement.AmazonIdentityManagementClient;
 import com.amazonaws.services.identitymanagement.model.GetUserResult;
+import com.amazonaws.services.kms.AWSKMSClient;
 import com.amazonaws.services.s3.AmazonS3Client;
 import com.amazonaws.services.securitytoken.AWSSecurityTokenServiceClient;
 import com.amazonaws.services.securitytoken.model.AssumeRoleRequest;
 import com.amazonaws.services.securitytoken.model.AssumeRoleResult;
 import com.amazonaws.services.securitytoken.model.Credentials;
+import static org.apache.commons.lang.StringUtils.isEmpty;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.OutputStreamWriter;
+import java.io.Writer;
+import java.util.UUID;
 
 /**
  * @author gibbon
@@ -52,6 +52,7 @@ public class AWSClients {
 
     public final AmazonCodeDeployClient codedeploy;
     public final AmazonS3Client         s3;
+    public final AWSKMSClient           kms;
 
     private final String region;
     private final String proxyHost;
@@ -71,18 +72,20 @@ public class AWSClients {
 
         this.s3 = credentials != null ? new AmazonS3Client(credentials, clientCfg) : new AmazonS3Client(clientCfg);
         this.codedeploy = credentials != null ? new AmazonCodeDeployClient(credentials, clientCfg) : new AmazonCodeDeployClient(clientCfg);
+        this.kms = credentials != null ? new AWSKMSClient(credentials, clientCfg) : new AWSKMSClient(clientCfg);
         codedeploy.setRegion(Region.getRegion(Regions.fromName(this.region)));
         s3.setRegion(Region.getRegion(Regions.fromName(this.region)));
+        kms.setRegion(Region.getRegion(Regions.fromName(this.region)));
     }
-    
+
     public static AWSClients fromDefaultCredentialChain(String region, String proxyHost, int proxyPort) {
         return new AWSClients(region, null, proxyHost, proxyPort);
     }
-    
+
     public static AWSClients fromIAMRole(String region, String iamRole, String externalId, String proxyHost, int proxyPort) {
         return new AWSClients(region, getCredentials(iamRole, externalId), proxyHost, proxyPort);
     }
-    
+
     public static AWSClients fromBasicCredentials(String region, String awsAccessKey, String awsSecretKey, String proxyHost, int proxyPort) {
         return new AWSClients(region, new BasicAWSCredentials(awsAccessKey, awsSecretKey), proxyHost, proxyPort);
     }

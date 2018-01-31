@@ -15,59 +15,47 @@
 package com.amazonaws.codedeploy;
 
 import com.amazonaws.regions.Regions;
-import com.amazonaws.services.codedeploy.model.ListApplicationsResult;
-import com.amazonaws.services.codedeploy.model.ListDeploymentGroupsRequest;
-import com.amazonaws.services.codedeploy.model.ListDeploymentGroupsResult;
-import com.amazonaws.services.codedeploy.model.RevisionLocation;
-import com.amazonaws.services.codedeploy.model.RevisionLocationType;
+import com.amazonaws.services.codedeploy.model.*;
+import com.amazonaws.services.kms.model.KeyListEntry;
+import com.amazonaws.services.kms.model.ListKeysResult;
+import com.amazonaws.services.s3.model.ObjectMetadata;
+import com.amazonaws.services.s3.model.PutObjectRequest;
 import com.amazonaws.services.s3.model.PutObjectResult;
-import com.amazonaws.services.codedeploy.model.BundleType;
-import com.amazonaws.services.codedeploy.model.CreateDeploymentRequest;
-import com.amazonaws.services.codedeploy.model.CreateDeploymentResult;
-import com.amazonaws.services.codedeploy.model.DeploymentInfo;
-import com.amazonaws.services.codedeploy.model.DeploymentOverview;
-import com.amazonaws.services.codedeploy.model.DeploymentStatus;
-import com.amazonaws.services.codedeploy.model.GetDeploymentRequest;
-import com.amazonaws.services.codedeploy.model.RegisterApplicationRevisionRequest;
-import com.amazonaws.services.codedeploy.model.S3Location;
-import com.amazonaws.services.codedeploy.model.GitHubLocation;
-
+import com.amazonaws.services.s3.model.SSEAwsKeyManagementParams;
 import hudson.AbortException;
+import hudson.Extension;
 import hudson.FilePath;
 import hudson.Launcher;
 import hudson.Util;
-import hudson.Extension;
 import hudson.model.AbstractProject;
 import hudson.model.Result;
 import hudson.model.Run;
 import hudson.model.TaskListener;
-import hudson.tasks.BuildStepMonitor;
 import hudson.tasks.BuildStepDescriptor;
+import hudson.tasks.BuildStepMonitor;
 import hudson.tasks.Publisher;
 import hudson.util.DirScanner;
 import hudson.util.FormValidation;
 import hudson.util.ListBoxModel;
 import jenkins.tasks.SimpleBuildStep;
 import net.sf.json.JSONObject;
-
-import org.apache.commons.lang.StringUtils;
 import org.apache.commons.io.FileUtils;
+import org.apache.commons.lang.StringUtils;
 import org.kohsuke.stapler.DataBoundConstructor;
 import org.kohsuke.stapler.QueryParameter;
 import org.kohsuke.stapler.StaplerRequest;
 
+import javax.annotation.Nonnull;
+import javax.servlet.ServletException;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
-import java.io.InputStreamReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.util.Date;
 import java.util.Map;
 import java.util.UUID;
-
-import javax.annotation.Nonnull;
-import javax.servlet.ServletException;
 
 /**
  * The AWS CodeDeploy Publisher is a post-build plugin that adds the ability to start a new CodeDeploy deployment
@@ -82,6 +70,8 @@ public class AWSCodeDeployPublisher extends Publisher implements SimpleBuildStep
     public static final long      DEFAULT_POLLING_FREQUENCY_SECONDS = 15;
     public static final String    ROLE_SESSION_NAME                 = "jenkins-codedeploy-plugin";
     private static final Regions[] AVAILABLE_REGIONS                 = {Regions.AP_NORTHEAST_1, Regions.AP_SOUTHEAST_1, Regions.AP_SOUTHEAST_2, Regions.EU_WEST_1, Regions.US_EAST_1, Regions.US_WEST_2, Regions.EU_CENTRAL_1, Regions.US_WEST_1, Regions.SA_EAST_1, Regions.AP_NORTHEAST_2, Regions.AP_SOUTH_1, Regions.US_EAST_2, Regions.CA_CENTRAL_1, Regions.EU_WEST_2, Regions.CN_NORTH_1};
+    private static final String SSES3 = "SSES3";
+    private static final String SSEKMS = "SSEKMS";
 
     private final String  s3bucket;
     private final String  s3prefix;
@@ -103,45 +93,55 @@ public class AWSCodeDeployPublisher extends Publisher implements SimpleBuildStep
     private final String proxyHost;
     private final int proxyPort;
 
-    private final String awsAccessKey;
-    private final String awsSecretKey;
-    private final String credentials;
-    private final String deploymentMethod;
-    private final String versionFileName;
+    private final String  awsAccessKey;
+    private final String  awsSecretKey;
+    private final String  credentials;
+    private final String  deploymentMethod;
+    private final String  versionFileName;
+    private final String  sseEncryptionType;
+    private final String  awsKMSKeyId;
+    private final Boolean awsSSEEncryption;
 
     private PrintStream logger;
     private Map <String, String> envVars;
+
+
     // Fields in config.jelly must match the parameter names in the "DataBoundConstructor"
     @DataBoundConstructor
-    public AWSCodeDeployPublisher(
-            String s3bucket,
-            String s3prefix,
-            String githubRepository,
-            String githubCommitId,
-            String applicationName,
-            String deploymentGroupName,
-            String deploymentConfig,
-            String region,
-            Boolean deploymentGroupAppspec,
-            Boolean waitForCompletion,
-            Long pollingTimeoutSec,
-            Long pollingFreqSec,
-            String credentials,
-            String versionFileName,
-            String deploymentMethod,
-            String awsAccessKey,
-            String awsSecretKey,
-            String iamRoleArn,
-            String externalId,
-            String includes,
-            String proxyHost,
-            int proxyPort,
-            String excludes,
-            String subdirectory) {
+    public AWSCodeDeployPublisher(String s3bucket,
+                                  String s3prefix,
+                                  String githubRepository,
+                                  String githubCommitId,
+                                  String applicationName,
+                                  String deploymentGroupName,
+                                  String deploymentConfig,
+                                  String region,
+                                  Boolean deploymentGroupAppspec,
+                                  Boolean waitForCompletion,
+                                  Long pollingTimeoutSec,
+                                  Long pollingFreqSec,
+                                  String credentials,
+                                  String versionFileName,
+                                  String deploymentMethod,
+                                  String awsAccessKey,
+                                  String awsSecretKey,
+                                  String iamRoleArn,
+                                  String externalId,
+                                  String includes,
+                                  String proxyHost,
+                                  int proxyPort,
+                                  String excludes,
+                                  String subdirectory,
+                                  String awsKMSKeyId,
+                                  String sseEncryptionType,
+                                  Boolean awsSSEEncryption) {
 
         this.externalId = externalId;
         this.applicationName = applicationName;
         this.deploymentGroupName = deploymentGroupName;
+        this.awsKMSKeyId = awsKMSKeyId;
+        this.sseEncryptionType = sseEncryptionType;
+        this.awsSSEEncryption = awsSSEEncryption;
         if (deploymentConfig != null && deploymentConfig.length() == 0) {
             this.deploymentConfig = null;
         } else {
@@ -203,30 +203,23 @@ public class AWSCodeDeployPublisher extends Publisher implements SimpleBuildStep
         final AWSClients aws;
         if ("awsAccessKey".equals(credentials)) {
             if (StringUtils.isEmpty(this.awsAccessKey) && StringUtils.isEmpty(this.awsSecretKey)) {
-                aws = AWSClients.fromDefaultCredentialChain(
-                        this.region,
-                        this.proxyHost,
-                        this.proxyPort);
-            } else {
-                aws = AWSClients.fromBasicCredentials(
-                        this.region,
-                        this.awsAccessKey,
-                        this.awsSecretKey,
-                        this.proxyHost,
-                        this.proxyPort);
+                aws = AWSClients.fromDefaultCredentialChain(this.region, this.proxyHost, this.proxyPort);
             }
-        } else {
-            aws = AWSClients.fromIAMRole(
-                this.region,
-                this.iamRoleArn,
-                this.getDescriptor().getExternalId(),
-                this.proxyHost,
-                this.proxyPort);
+            else {
+                aws = AWSClients.fromBasicCredentials(this.region, this.awsAccessKey, this.awsSecretKey, this.proxyHost, this.proxyPort);
+            }
+        }
+        else {
+            aws =
+                AWSClients.fromIAMRole(this.region, this.iamRoleArn, this.getDescriptor().getExternalId(), this.proxyHost, this.proxyPort);
         }
 
         boolean success = false;
 
         try {
+            if (sseEncryptionType.equals(SSEKMS) && awsKMSKeyId != null && !awsKMSKeyId.isEmpty()) {
+                verifyAWSKMSKeyId(aws, awsKMSKeyId);
+            }
 
             verifyCodeDeployApplication(aws);
 
@@ -238,23 +231,25 @@ public class AWSCodeDeployPublisher extends Publisher implements SimpleBuildStep
             RevisionLocation revisionLocation;
 
             if (!StringUtils.isEmpty(this.githubRepository) && !StringUtils.isEmpty(this.githubCommitId)) {
-              revisionLocation = createFromGitHub();
-            } else {
-              final FilePath sourceDirectory = getSourceDirectory(workspace);
-              revisionLocation = zipAndUpload(aws, projectName, sourceDirectory);
+                revisionLocation = createFromGitHub();
+            }
+            else {
+                final FilePath sourceDirectory = getSourceDirectory(workspace);
+                revisionLocation = zipAndUpload(aws, projectName, sourceDirectory);
             }
 
             registerRevision(aws, revisionLocation);
-            if ("onlyRevision".equals(deploymentMethod)){
-              success = true;
-            } else {
-
-              String deploymentId = createDeployment(aws, revisionLocation);
-
-              success = waitForDeployment(aws, deploymentId);
+            if ("onlyRevision".equals(deploymentMethod)) {
+                success = true;
             }
+            else {
 
-        } catch (Exception e) {
+                String deploymentId = createDeployment(aws, revisionLocation);
+
+                success = waitForDeployment(aws, deploymentId);
+            }
+        }
+        catch (Exception e) {
 
             this.logger.println("Failed CodeDeploy post-build step; exception follows.");
             this.logger.println(e.getMessage());
@@ -273,15 +268,15 @@ public class AWSCodeDeployPublisher extends Publisher implements SimpleBuildStep
         }
         FilePath sourcePath = basePath.withSuffix(subdirectory).absolutize();
         if (!sourcePath.isDirectory() || !isSubDirectory(basePath, sourcePath)) {
-            throw new IllegalArgumentException("Provided path (resolved as '" + sourcePath
-                    +"') is not a subdirectory of the workspace (resolved as '" + basePath + "')");
+            throw new IllegalArgumentException(
+                "Provided path (resolved as '" + sourcePath + "') is not a subdirectory of the workspace (resolved as '" + basePath + "')");
         }
         return sourcePath;
     }
 
     private boolean isSubDirectory(FilePath parent, FilePath child) {
         FilePath parentFolder = child;
-        while (parentFolder!=null) {
+        while (parentFolder != null) {
             if (parent.equals(parentFolder)) {
                 return true;
             }
@@ -292,22 +287,35 @@ public class AWSCodeDeployPublisher extends Publisher implements SimpleBuildStep
 
     private void verifyCodeDeployApplication(AWSClients aws) throws IllegalArgumentException {
         // Check that the application exists
-        ListApplicationsResult applications = aws.codedeploy.listApplications();
-        String applicationName = getApplicationNameFromEnv();
-        String deploymentGroupName = getDeploymentGroupNameFromEnv();
+        ListApplicationsResult applications        = aws.codedeploy.listApplications();
+        String                 applicationName     = getApplicationNameFromEnv();
+        String                 deploymentGroupName = getDeploymentGroupNameFromEnv();
 
         if (!applications.getApplications().contains(applicationName)) {
             throw new IllegalArgumentException("Cannot find application named '" + applicationName + "'");
         }
 
         // Check that the deployment group exists
-        ListDeploymentGroupsResult deploymentGroups = aws.codedeploy.listDeploymentGroups(
-                new ListDeploymentGroupsRequest()
-                        .withApplicationName(applicationName)
-        );
+        ListDeploymentGroupsResult
+            deploymentGroups =
+            aws.codedeploy.listDeploymentGroups(new ListDeploymentGroupsRequest().withApplicationName(applicationName));
 
         if (!deploymentGroups.getDeploymentGroups().contains(deploymentGroupName)) {
             throw new IllegalArgumentException("Cannot find deployment group named '" + deploymentGroupName + "'");
+        }
+    }
+
+    private void verifyAWSKMSKeyId(AWSClients aws, final String awsKMSKeyId) throws IllegalArgumentException {
+        ListKeysResult listKeysResult = aws.kms.listKeys();
+        boolean found = false;
+        for (KeyListEntry e : listKeysResult.getKeys()) {
+            if (e.getKeyId().equals(awsKMSKeyId)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            throw new IllegalArgumentException("Cannot find AWS KMS Key with id '" + awsKMSKeyId + "'");
         }
     }
 
@@ -363,7 +371,6 @@ public class AWSCodeDeployPublisher extends Publisher implements SimpleBuildStep
                 if (!appspec.exists()) {
                     throw new IllegalArgumentException("/appspec." + deploymentGroupName + ".yml file does not exist" );
                 }
-
             }
 
             logger.println("Zipping files into " + zipFile.getAbsolutePath());
@@ -389,7 +396,32 @@ public class AWSCodeDeployPublisher extends Publisher implements SimpleBuildStep
                 }
             }
             logger.println("Uploading zip to s3://" + bucket + "/" + key);
-            PutObjectResult s3result = aws.s3.putObject(bucket, key, zipFile);
+
+            PutObjectRequest putObjectRequest;
+            switch (sseEncryptionType) {
+                case SSES3:
+                    ObjectMetadata objectMetadata = new ObjectMetadata();
+                    putObjectRequest = new PutObjectRequest(bucket, key, zipFile);
+                    putObjectRequest.setMetadata(objectMetadata);
+                    objectMetadata.setSSEAlgorithm(ObjectMetadata.AES_256_SERVER_SIDE_ENCRYPTION);
+                    break;
+                case SSEKMS:
+                    if (awsKMSKeyId == null || awsKMSKeyId.isEmpty()) {
+                        putObjectRequest =
+                            new PutObjectRequest(bucket, key, zipFile).withSSEAwsKeyManagementParams(new SSEAwsKeyManagementParams());
+                    }
+                    else {
+                        putObjectRequest =
+                            new PutObjectRequest(bucket, key, zipFile).withSSEAwsKeyManagementParams(new SSEAwsKeyManagementParams(
+                                awsKMSKeyId));
+                    }
+                    break;
+                default:
+                    putObjectRequest = new PutObjectRequest(bucket, key, zipFile);
+                    break;
+            }
+
+            PutObjectResult s3result = aws.s3.putObject(putObjectRequest);
 
             S3Location s3Location = new S3Location();
             s3Location.setBucket(bucket);
@@ -411,15 +443,15 @@ public class AWSCodeDeployPublisher extends Publisher implements SimpleBuildStep
     }
 
     private RevisionLocation createFromGitHub() {
-      GitHubLocation githubLocation = new GitHubLocation();
-      githubLocation.setRepository(this.githubRepository);
-      githubLocation.setCommitId(this.githubCommitId);
+        GitHubLocation githubLocation = new GitHubLocation();
+        githubLocation.setRepository(this.githubRepository);
+        githubLocation.setCommitId(this.githubCommitId);
 
-      RevisionLocation revisionLocation = new RevisionLocation();
-      revisionLocation.setRevisionType(RevisionLocationType.GitHub);
-      revisionLocation.setGitHubLocation(githubLocation);
+        RevisionLocation revisionLocation = new RevisionLocation();
+        revisionLocation.setRevisionType(RevisionLocationType.GitHub);
+        revisionLocation.setGitHubLocation(githubLocation);
 
-      return revisionLocation;
+        return revisionLocation;
     }
 
     private void registerRevision(AWSClients aws, RevisionLocation revisionLocation) {
@@ -427,26 +459,23 @@ public class AWSCodeDeployPublisher extends Publisher implements SimpleBuildStep
         String applicationName = getApplicationNameFromEnv();
         this.logger.println("Registering revision for application '" + applicationName + "'");
 
-        aws.codedeploy.registerApplicationRevision(
-                new RegisterApplicationRevisionRequest()
-                        .withApplicationName(applicationName)
-                        .withRevision(revisionLocation)
-                        .withDescription("Application revision registered via Jenkins")
-        );
+        aws.codedeploy.registerApplicationRevision(new RegisterApplicationRevisionRequest().withApplicationName(applicationName)
+                                                                                           .withRevision(revisionLocation)
+                                                                                           .withDescription(
+                                                                                               "Application revision registered via Jenkins"));
     }
 
     private String createDeployment(AWSClients aws, RevisionLocation revisionLocation) throws Exception {
 
         this.logger.println("Creating deployment with revision at " + revisionLocation);
 
-        CreateDeploymentResult createDeploymentResult = aws.codedeploy.createDeployment(
-                new CreateDeploymentRequest()
-                        .withDeploymentConfigName(getDeploymentConfigFromEnv())
-                        .withDeploymentGroupName(getDeploymentGroupNameFromEnv())
-                        .withApplicationName(getApplicationNameFromEnv())
-                        .withRevision(revisionLocation)
-                        .withDescription("Deployment created by Jenkins")
-        );
+        CreateDeploymentResult
+            createDeploymentResult =
+            aws.codedeploy.createDeployment(new CreateDeploymentRequest().withDeploymentConfigName(getDeploymentConfigFromEnv())
+                                                                         .withDeploymentGroupName(getDeploymentGroupNameFromEnv())
+                                                                         .withApplicationName(getApplicationNameFromEnv())
+                                                                         .withRevision(revisionLocation)
+                                                                         .withDescription("Deployment created by Jenkins"));
 
         return createDeploymentResult.getDeploymentId();
     }
@@ -466,19 +495,21 @@ public class AWSCodeDeployPublisher extends Publisher implements SimpleBuildStep
         long startTimeMillis;
         if (deployStatus == null || deployStatus.getStartTime() == null) {
             startTimeMillis = new Date().getTime();
-        } else {
+        }
+        else {
             startTimeMillis = deployStatus.getStartTime().getTime();
         }
 
-        boolean success = true;
-        long pollingTimeoutMillis = this.pollingTimeoutSec * 1000L;
-        long pollingFreqMillis = this.pollingFreqSec * 1000L;
+        boolean success              = true;
+        long    pollingTimeoutMillis = this.pollingTimeoutSec * 1000L;
+        long    pollingFreqMillis    = this.pollingFreqSec * 1000L;
 
         while (deployStatus == null || deployStatus.getCompleteTime() == null) {
 
             if (deployStatus == null) {
                 logger.println("Deployment status: unknown.");
-            } else {
+            }
+            else {
                 DeploymentOverview overview = deployStatus.getDeploymentOverview();
                 logger.println("Deployment status: " + deployStatus.getStatus() + "; instances: " + overview);
             }
@@ -519,12 +550,11 @@ public class AWSCodeDeployPublisher extends Publisher implements SimpleBuildStep
     }
 
     /**
-     *
-     * Descriptor for {@link AWSCodeDeployPublisher}. Used as a singleton.
-     * The class is marked as public so that it can be accessed from views.
-     *
-     * See <tt>src/main/resources/com/amazonaws/codedeploy/AWSCodeDeployPublisher/*.jelly</tt>
-     * for the actual HTML fragment for the configuration screen.
+     * Descriptor for {@link AWSCodeDeployPublisher}. Used as a singleton. The class is marked as public so that it can be accessed from
+     * views.
+     * <p>
+     * See <tt>src/main/resources/com/amazonaws/codedeploy/AWSCodeDeployPublisher/*.jelly</tt> for the actual HTML fragment for the
+     * configuration screen.
      */
     @Extension // This indicates to Jenkins that this is an implementation of an extension point.
     public static final class DescriptorImpl extends BuildStepDescriptor<Publisher> {
@@ -533,11 +563,10 @@ public class AWSCodeDeployPublisher extends Publisher implements SimpleBuildStep
         private String awsAccessKey;
         private String awsSecretKey;
         private String proxyHost;
-        private int proxyPort;
+        private int    proxyPort;
 
         /**
-         * In order to load the persisted global configuration, you have to
-         * call load() in the constructor.
+         * In order to load the persisted global configuration, you have to call load() in the constructor.
          */
         public DescriptorImpl() {
             load();
@@ -548,9 +577,8 @@ public class AWSCodeDeployPublisher extends Publisher implements SimpleBuildStep
         }
 
         public FormValidation doCheckName(@QueryParameter String value)
-                throws IOException, ServletException {
-            if (value.length() == 0)
-                return FormValidation.error("Please add the appropriate values");
+            throws IOException, ServletException {
+            if (value.length() == 0) { return FormValidation.error("Please add the appropriate values"); }
             return FormValidation.ok();
         }
 
@@ -567,7 +595,8 @@ public class AWSCodeDeployPublisher extends Publisher implements SimpleBuildStep
         }
 
         @Override
-        public boolean configure(StaplerRequest req, JSONObject formData) throws FormException {
+        public boolean configure(StaplerRequest req, JSONObject formData)
+            throws FormException {
 
             awsAccessKey = formData.getString("awsAccessKey");
             awsSecretKey = formData.getString("awsSecretKey");
@@ -607,28 +636,22 @@ public class AWSCodeDeployPublisher extends Publisher implements SimpleBuildStep
             return AWSClients.getAccountId(getProxyHost(), getProxyPort());
         }
 
-        public FormValidation doTestConnection(
-                @QueryParameter String s3bucket,
-                @QueryParameter String applicationName,
-                @QueryParameter String region,
-                @QueryParameter String iamRoleArn,
-                @QueryParameter String proxyHost,
-                @QueryParameter int proxyPort) {
+        public FormValidation doTestConnection(@QueryParameter String s3bucket,
+                                               @QueryParameter String applicationName,
+                                               @QueryParameter String region,
+                                               @QueryParameter String iamRoleArn,
+                                               @QueryParameter String proxyHost,
+                                               @QueryParameter int proxyPort) {
 
-            System.out.println("Testing connection with parameters: "
-                    + s3bucket + ","
-                    + applicationName + ","
-                    + region + ","
-                    + iamRoleArn + ","
-                    + this.externalId + ","
-                    + proxyHost + ","
-                    + proxyPort
-            );
+            System.out.println(
+                "Testing connection with parameters: " + s3bucket + "," + applicationName + "," + region + "," + iamRoleArn + "," +
+                this.externalId + "," + proxyHost + "," + proxyPort);
 
             try {
                 AWSClients awsClients = AWSClients.fromIAMRole(region, iamRoleArn, this.externalId, proxyHost, proxyPort);
                 awsClients.testConnection(s3bucket, applicationName);
-            } catch (Exception e) {
+            }
+            catch (Exception e) {
                 return FormValidation.error("Connection test failed with error: " + e.getMessage());
             }
 
@@ -643,26 +666,28 @@ public class AWSCodeDeployPublisher extends Publisher implements SimpleBuildStep
             return items;
         }
 
-        public String getAwsSecretKey()
-        {
+        public ListBoxModel doFillSseEncryptionTypeItems() {
+            ListBoxModel items = new ListBoxModel();
+            items.add("SSE S3 Keys", SSES3);
+            items.add("AWS KMS Managed Keys", SSEKMS);
+            return items;
+        }
+
+        public String getAwsSecretKey() {
             return awsSecretKey;
         }
 
-        public void setAwsSecretKey(String awsSecretKey)
-        {
+        public void setAwsSecretKey(String awsSecretKey) {
             this.awsSecretKey = awsSecretKey;
         }
 
-        public String getAwsAccessKey()
-        {
+        public String getAwsAccessKey() {
             return awsAccessKey;
         }
 
-        public void setAwsAccessKey(String awsAccessKey)
-        {
+        public void setAwsAccessKey(String awsAccessKey) {
             this.awsAccessKey = awsAccessKey;
         }
-
     }
 
     public String getApplicationName() {
@@ -752,6 +777,12 @@ public class AWSCodeDeployPublisher extends Publisher implements SimpleBuildStep
     public int getProxyPort() {
         return proxyPort;
     }
+
+    public String getSseEncryptionType() { return sseEncryptionType; }
+
+    public Boolean getAwsSSEEncryption() { return awsSSEEncryption; }
+
+    public String getAwsKMSKeyId() { return awsKMSKeyId; }
 
     public String getApplicationNameFromEnv() {
         return Util.replaceMacro(this.applicationName, envVars);

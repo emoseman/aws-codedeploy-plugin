@@ -18,6 +18,23 @@
   <f:entry title="S3 Prefix" field="s3prefix">
     <f:textbox default="" />
   </f:entry>
+  <f:optionalBlock title="AWS S3 Server-Side Encryption" field="awsSSEEncryption" checked="${instance.getAwsSSEEncryption()}" inline="true">
+      <f:nested>
+          <f:radioBlock title="SSE S3" name="sseEncryptionType" value="SSES3" checked="${instance.getSseEncryptionType() == 'SSES3'}" inline="true">
+            <f:description>
+                Amazon S3-Managed Encryption Keys
+            </f:description>
+          </f:radioBlock>
+          <f:radioBlock title="SSE AWS KMS" name="sseEncryptionType" value="SSEKMS" checked="${instance.getSseEncryptionType() == 'SSEKMS'}" inline="true">
+            <f:description>
+                AWS KMS-Managed Encryption Keys
+            </f:description>
+              <f:entry title="AWS KMS Key ID" field="awsKMSKeyId">
+                <f:textbox default="" />
+              </f:entry>
+          </f:radioBlock>
+      </f:nested>
+  </f:optionalBlock>
   <f:entry title="GitHub Repository" field="githubRespository">
     <f:textbox default="" />
   </f:entry>
